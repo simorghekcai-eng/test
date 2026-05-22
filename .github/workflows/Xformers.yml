@@ -1,4 +1,4 @@
-name: Download xformers wheel
+name: Download all Python dependencies
 
 on:
   workflow_dispatch:
@@ -6,23 +6,92 @@ on:
 jobs:
   download:
     runs-on: ubuntu-latest
+    container:
+      image: pytorch/pytorch:2.9.1-cuda12.8-cudnn9-devel
     steps:
-      - name: Download xformers wheel
-        run: |
-          mkdir -p wheels
-          curl -L --fail --retry 5 --retry-delay 10 \
-            -o "wheels/xformers-0.0.33+5d4b92a5.d20251029-cp39-abi3-linux_x86_64.whl" \
-            "https://download.pytorch.org/whl/cu128/xformers-0.0.33%2B5d4b92a5.d20251029-cp39-abi3-linux_x86_64.whl"
+      - name: Upgrade pip
+        run: pip install --upgrade pip setuptools wheel
 
-      - name: Verify download
-        run: |
-          ls -lh wheels/
-          file wheels/*.whl
+      - name: Create wheels directory
+        run: mkdir -p wheels
 
-      - name: Upload as artifact
+      - name: Download torch stack
+        run: |
+          pip download --no-cache-dir -d wheels \
+            --extra-index-url https://download.pytorch.org/whl/cu128 \
+            "torch==2.9.1+cu128" \
+            "torchvision==0.24.1+cu128" \
+            "torchaudio==2.9.1+cu128"
+
+      - name: Download core ML stack
+        run: |
+          pip download --no-cache-dir -d wheels \
+            transformers==4.56.2 \
+            accelerate==1.10.1 \
+            peft==0.17.1 \
+            safetensors==0.6.2 \
+            tokenizers==0.22.1
+
+      - name: Download bitsandbytes
+        run: pip download --no-cache-dir --no-deps -d wheels bitsandbytes
+
+      - name: Download xformers
+        run: |
+          pip download --no-cache-dir --no-deps -d wheels \
+            --extra-index-url https://download.pytorch.org/whl/cu128 \
+            xformers==0.0.33
+
+      - name: Download vLLM deps
+        run: |
+          pip download --no-cache-dir -d wheels \
+            aiohttp anthropic blake3 cachetools cbor2 cloudpickle \
+            compressed-tensors depyf diskcache einops \
+            "fastapi[standard]>=0.115.0" filelock "gguf>=0.17.0" \
+            "llguidance>=1.3.0" lm-format-enforcer \
+            "mistral_common[image]>=1.8.5" msgspec numba nvidia-ml-py \
+            "openai>=1.99.1" openai-harmony "opencv-python-headless>=4.11.0" \
+            outlines_core partial-json-parser pillow \
+            "prometheus-fastapi-instrumentator>=7.0.0" \
+            "prometheus_client>=0.18.0" protobuf psutil py-cpuinfo \
+            pybase64 "pydantic>=2.12.0" python-json-logger "pyzmq>=25.0.0" \
+            "ray>=2.48.0" scipy sentencepiece setproctitle \
+            "tiktoken>=0.6.0" watchfiles xgrammar
+
+      - name: Download vLLM
+        run: pip download --no-cache-dir --no-deps -d wheels vllm==0.12.0
+
+      - name: Download FastAPI stack
+        run: |
+          pip download --no-cache-dir -d wheels \
+            fastapi==0.116.1 \
+            "uvicorn[standard]==0.35.0" \
+            pydantic==2.11.9 \
+            pydantic-settings==2.11.0 \
+            pydantic_core==2.33.2
+
+      - name: Download additional ML deps
+        run: |
+          pip download --no-cache-dir -d wheels \
+            datasets==3.6.0 \
+            sentencepiece==0.2.1 \
+            sentence-transformers==5.1.0 \
+            tiktoken==0.11.0
+
+      - name: Download requirements.txt
+        run: |
+          if [ -f ai/requirements.txt ]; then
+            pip download --no-cache-dir -d wheels -r ai/requirements.txt
+          fi
+
+      - name: List and size check
+        run: |
+          ls wheels/ | wc -l
+          du -sh wheels/
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: xformers-wheel
-          path: wheels/*.whl
+          name: python-wheels
+          path: wheels/
           retention-days: 7
           compression-level: 0
