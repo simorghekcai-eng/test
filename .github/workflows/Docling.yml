@@ -1,11 +1,7 @@
 name: Pull Docling Serve CPU Image
 
-# Run manually from the Actions tab, or on a schedule / push as you like
 on:
   workflow_dispatch:
-  # Uncomment to also run on pushes to main:
-  # push:
-  #   branches: [ main ]
 
 jobs:
   pull-and-package:
@@ -39,27 +35,27 @@ jobs:
 
       - name: Generate image metadata
         run: |
+          IMAGE="quay.io/docling-project/docling-serve-cpu:latest"
           {
             echo "# Docling Serve CPU Image"
             echo ""
-            echo "**Source:** quay.io/docling-project/docling-serve-cpu:latest"
-            echo "**Pulled at:** $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo "**Source:** $IMAGE"
+            echo "**Pulled at:** $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo ""
             echo "## Image details"
             echo '```'
-            docker inspect quay.io/docling-project/docling-serve-cpu:latest \
-              --format 'ID:       {{.Id}}
-Created:  {{.Created}}
-Size:     {{.Size}} bytes
-Arch:     {{.Architecture}}/{{.Os}}
-Digest:   {{index .RepoDigests 0}}'
+            echo "ID:      $(docker inspect "$IMAGE" --format '{{.Id}}')"
+            echo "Created: $(docker inspect "$IMAGE" --format '{{.Created}}')"
+            echo "Size:    $(docker inspect "$IMAGE" --format '{{.Size}}') bytes"
+            echo "Arch:    $(docker inspect "$IMAGE" --format '{{.Architecture}}/{{.Os}}')"
+            echo "Digest:  $(docker inspect "$IMAGE" --format '{{index .RepoDigests 0}}')"
             echo '```'
             echo ""
             echo "## How to load this image locally"
             echo '```bash'
             echo "unzip docling-serve-cpu-latest.zip"
             echo "docker load -i docling-serve-cpu-latest.tar"
-            echo "docker run -p 5001:5001 quay.io/docling-project/docling-serve-cpu:latest"
+            echo "docker run -p 5001:5001 $IMAGE"
             echo '```'
           } > image-output/README.md
           cat image-output/README.md
@@ -71,11 +67,10 @@ Digest:   {{index .RepoDigests 0}}'
           name: docling-serve-cpu-image
           path: image-output/
           retention-days: 7
-          compression-level: 0  # already zipped, skip recompression
+          compression-level: 0
 
       - name: Print artifact download link
         run: |
           echo "::notice title=Artifact ready::Download from: ${{ steps.upload.outputs.artifact-url }}"
-          echo ""
           echo "Artifact URL: ${{ steps.upload.outputs.artifact-url }}"
-          echo "Or visit:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Run page:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
