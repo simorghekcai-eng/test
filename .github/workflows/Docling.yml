@@ -1,0 +1,81 @@
+name: Pull Docling Serve CPU Image
+
+# Run manually from the Actions tab, or on a schedule / push as you like
+on:
+  workflow_dispatch:
+  # Uncomment to also run on pushes to main:
+  # push:
+  #   branches: [ main ]
+
+jobs:
+  pull-and-package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Pull docling-serve-cpu image from quay.io
+        run: |
+          docker pull quay.io/docling-project/docling-serve-cpu:latest
+          docker images quay.io/docling-project/docling-serve-cpu:latest
+
+      - name: Save image as tar archive
+        run: |
+          mkdir -p image-output
+          docker save quay.io/docling-project/docling-serve-cpu:latest \
+            -o image-output/docling-serve-cpu-latest.tar
+          ls -lh image-output/
+
+      - name: Compress tar into zip
+        run: |
+          cd image-output
+          zip -9 docling-serve-cpu-latest.zip docling-serve-cpu-latest.tar
+          rm docling-serve-cpu-latest.tar
+          ls -lh
+
+      - name: Generate image metadata
+        run: |
+          {
+            echo "# Docling Serve CPU Image"
+            echo ""
+            echo "**Source:** quay.io/docling-project/docling-serve-cpu:latest"
+            echo "**Pulled at:** $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo ""
+            echo "## Image details"
+            echo '```'
+            docker inspect quay.io/docling-project/docling-serve-cpu:latest \
+              --format 'ID:       {{.Id}}
+Created:  {{.Created}}
+Size:     {{.Size}} bytes
+Arch:     {{.Architecture}}/{{.Os}}
+Digest:   {{index .RepoDigests 0}}'
+            echo '```'
+            echo ""
+            echo "## How to load this image locally"
+            echo '```bash'
+            echo "unzip docling-serve-cpu-latest.zip"
+            echo "docker load -i docling-serve-cpu-latest.tar"
+            echo "docker run -p 5001:5001 quay.io/docling-project/docling-serve-cpu:latest"
+            echo '```'
+          } > image-output/README.md
+          cat image-output/README.md
+
+      - name: Upload zipped image as artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: docling-serve-cpu-image
+          path: image-output/
+          retention-days: 7
+          compression-level: 0  # already zipped, skip recompression
+
+      - name: Print artifact download link
+        run: |
+          echo "::notice title=Artifact ready::Download from: ${{ steps.upload.outputs.artifact-url }}"
+          echo ""
+          echo "Artifact URL: ${{ steps.upload.outputs.artifact-url }}"
+          echo "Or visit:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
