@@ -1,0 +1,180 @@
+name: Build Docker Offline Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_version:
+        description: "Docker Engine version (blank = latest stable)"
+        required: false
+        default: ""
+      compose_version:
+        description: "Compose version e.g. v5.1.4 (blank = latest)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Resolve versions
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARCH="${{ matrix.arch }}"
+
+          ENGINE="${{ inputs.engine_version }}"
+          if [ -z "$ENGINE" ]; then
+            ENGINE=$(curl -fsSL "https://download.docker.com/linux/static/stable/${ARCH}/" \
+              | grep -oP 'docker-\K[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?(?=\.tgz)' \
+              | sort -V | tail -n1)
+          fi
+
+          COMPOSE="${{ inputs.compose_version }}"
+          if [ -z "$COMPOSE" ]; then
+            COMPOSE=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+              https://api.github.com/repos/docker/compose/releases/latest \
+              | jq -r .tag_name)
+          fi
+
+          echo "engine=$ENGINE"   >> "$GITHUB_OUTPUT"
+          echo "compose=$COMPOSE" >> "$GITHUB_OUTPUT"
+          echo "Resolved -> Engine=$ENGINE  Compose=$COMPOSE  Arch=$ARCH"
+
+      - name: Download binaries
+        run: |
+          set -euo pipefail
+          ARCH="${{ matrix.arch }}"
+          ENGINE="${{ steps.ver.outputs.engine }}"
+          COMPOSE="${{ steps.ver.outputs.compose }}"
+          STAGE="docker-offline-bundle"
+          mkdir -p "$STAGE/bin" "$STAGE/cli-plugins" "$STAGE/systemd"
+
+          curl -fsSLo engine.tgz \
+            "https://download.docker.com/linux/static/stable/${ARCH}/docker-${ENGINE}.tgz"
+          tar xzf engine.tgz
+          cp docker/* "$STAGE/bin/"
+
+          curl -fsSLo "$STAGE/cli-plugins/docker-compose" \
+            "https://github.com/docker/compose/releases/download/${COMPOSE}/docker-compose-linux-${ARCH}"
+          chmod +x "$STAGE/cli-plugins/docker-compose"
+
+      - name: Stage systemd units, installer, manifest
+        run: |
+          set -euo pipefail
+          ARCH="${{ matrix.arch }}"
+          ENGINE="${{ steps.ver.outputs.engine }}"
+          COMPOSE="${{ steps.ver.outputs.compose }}"
+          STAGE="docker-offline-bundle"
+
+          cat > "$STAGE/systemd/docker.socket" <<'EOF'
+          [Unit]
+          Description=Docker Socket for the API
+
+          [Socket]
+          ListenStream=/run/docker.sock
+          SocketMode=0660
+          SocketUser=root
+          SocketGroup=docker
+
+          [Install]
+          WantedBy=sockets.target
+          EOF
+
+          cat > "$STAGE/systemd/docker.service" <<'EOF'
+          [Unit]
+          Description=Docker Application Container Engine
+          After=network-online.target docker.socket
+          Wants=network-online.target
+          Requires=docker.socket
+
+          [Service]
+          Type=notify
+          ExecStart=/usr/local/bin/dockerd -H fd://
+          ExecReload=/bin/kill -s HUP $MAINPID
+          LimitNOFILE=infinity
+          LimitNPROC=infinity
+          LimitCORE=infinity
+          TasksMax=infinity
+          Delegate=yes
+          KillMode=process
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          cat > "$STAGE/install.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          if [ "$(id -u)" -ne 0 ]; then
+            echo "Please run as root: sudo ./install.sh" >&2
+            exit 1
+          fi
+
+          HERE="$(cd "$(dirname "$0")" && pwd)"
+
+          echo "==> Checking dependencies"
+          if ! command -v iptables >/dev/null 2>&1; then
+            echo "WARNING: 'iptables' not found. dockerd needs it for container networking."
+            echo "         Install it (apt install iptables) before starting Docker."
+          fi
+
+          echo "==> Installing engine binaries -> /usr/local/bin"
+          install -m 0755 "$HERE"/bin/* /usr/local/bin/
+
+          echo "==> Installing compose plugin"
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          install -m 0755 "$HERE/cli-plugins/docker-compose" /usr/local/lib/docker/cli-plugins/docker-compose
+          ln -sf /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
+
+          echo "==> Installing systemd units"
+          install -m 0644 "$HERE/systemd/docker.service" /etc/systemd/system/docker.service
+          install -m 0644 "$HERE/systemd/docker.socket"  /etc/systemd/system/docker.socket
+
+          echo "==> Creating docker group + enabling service"
+          groupadd -f docker
+          systemctl daemon-reload
+          systemctl enable --now docker.socket docker.service
+
+          echo "==> Done:"
+          /usr/local/bin/dockerd --version || true
+          /usr/local/bin/docker --version || true
+          /usr/local/bin/docker compose version || true
+          echo
+          echo "Run without sudo: sudo usermod -aG docker \$USER  (then re-login)"
+          EOF
+          chmod +x "$STAGE/install.sh"
+
+          cat > "$STAGE/VERSIONS.txt" <<EOF
+          Docker Engine : ${ENGINE}
+          Docker Compose: ${COMPOSE}
+          Architecture  : ${ARCH}
+          Built (UTC)   : $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          Source repo   : ${GITHUB_REPOSITORY}@${GITHUB_SHA}
+          EOF
+
+      - name: Verify staged files
+        run: |
+          set -euo pipefail
+          STAGE="docker-offline-bundle"
+          find "$STAGE" -type f -exec ls -lh {} \;
+          test -s "$STAGE/bin/dockerd"
+          test -s "$STAGE/cli-plugins/docker-compose"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-bundle-${{ matrix.arch }}-engine-${{ steps.ver.outputs.engine }}-compose-${{ steps.ver.outputs.compose }}
+          path: docker-offline-bundle/
+          if-no-files-found: error
+          compression-level: 9
